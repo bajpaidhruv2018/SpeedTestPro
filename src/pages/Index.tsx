@@ -1,7 +1,7 @@
-import { SpeedTest } from "@/components/SpeedTest";
+import { SpeedTestAdvanced } from "@/components/SpeedTestAdvanced";
 
 const Index = () => {
-  return <SpeedTest />;
+  return <SpeedTestAdvanced />;
 };
 
 export default Index;
