@@ -59,21 +59,22 @@ export const SpeedTest = () => {
 
   const measureUploadSpeed = async () => {
     try {
-      // Create 5MB of random data
+      // Create 5MB of random data as a Blob (not Uint8Array to avoid JSON serialization)
       const dataSize = 5000000;
-      const data = new Uint8Array(dataSize);
+      const buffer = new ArrayBuffer(dataSize);
+      const view = new Uint8Array(buffer);
       for (let i = 0; i < dataSize; i++) {
-        data[i] = Math.floor(Math.random() * 256);
+        view[i] = Math.floor(Math.random() * 256);
       }
       
+      // Create Blob from ArrayBuffer for proper binary upload
+      const blob = new Blob([buffer], { type: "application/octet-stream" });
+      
       const startTime = performance.now();
-      await fetch("https://speed.cloudflare.com/__up", {
+      await fetch("https://httpbin.org/post", {
         method: "POST",
-        body: data,
+        body: blob,
         cache: "no-cache",
-        headers: {
-          "Content-Type": "application/octet-stream",
-        },
       });
       const endTime = performance.now();
 
