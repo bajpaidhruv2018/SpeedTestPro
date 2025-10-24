@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Gauge, Play, Square, Wifi, Upload as UploadIcon, Download as DownloadIcon, Activity } from "lucide-react";
+import { Gauge, Play, Square, Wifi, Upload as UploadIcon, Download as DownloadIcon, Activity, History } from "lucide-react";
 import { toast } from "sonner";
 import { Progress } from "@/components/ui/progress";
+import { saveResult } from "@/lib/storage";
 
 type TestPhase = "idle" | "download" | "upload" | "loaded-latency" | "complete";
 type TestMode = "quick" | "advanced";
@@ -25,6 +27,7 @@ interface TestResult {
 }
 
 export const SpeedTestAdvanced = () => {
+  const navigate = useNavigate();
   const [isRunning, setIsRunning] = useState(false);
   const [phase, setPhase] = useState<TestPhase>("idle");
   const [mode, setMode] = useState<TestMode>("quick");
@@ -51,10 +54,31 @@ export const SpeedTestAdvanced = () => {
         if (progress.idleLatencyMs) setCurrentLatency(progress.idleLatencyMs);
         if (progress.loadedLatencyMs) setCurrentLatency(progress.loadedLatencyMs);
       } else if (type === "complete") {
-        setResult(testResult);
+        const fullResult = {
+          id: crypto.randomUUID(),
+          createdAt: new Date().toISOString(),
+          server: { id: "main", name: "Main Server", region: "Auto", url: window.location.origin },
+          client: {
+            userAgent: navigator.userAgent,
+            platform: navigator.platform,
+            connectionType: (navigator as any).connection?.effectiveType,
+          },
+          testConfig: {
+            mode,
+            durationSec: mode === "quick" ? 15 : 60,
+            concurrency: mode === "quick" ? 4 : 8,
+          },
+          ...testResult,
+        };
+        
+        setResult(fullResult);
         setPhase("complete");
         setIsRunning(false);
-        toast.success("Speed test completed!");
+        
+        // Save to IndexedDB
+        saveResult(fullResult).then(() => {
+          toast.success("Speed test completed and saved!");
+        });
       } else if (type === "error") {
         toast.error(`Test error: ${e.data.error}`);
         setIsRunning(false);
@@ -128,9 +152,15 @@ export const SpeedTestAdvanced = () => {
       <div className="w-full max-w-6xl space-y-6">
         {/* Header */}
         <div className="text-center space-y-2 mb-8">
-          <h1 className="text-5xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-            Advanced Speed Test
-          </h1>
+          <div className="flex items-center justify-center gap-4 mb-2">
+            <h1 className="text-5xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+              Advanced Speed Test
+            </h1>
+            <Button variant="outline" onClick={() => navigate("/history")}>
+              <History className="mr-2 h-4 w-4" />
+              History
+            </Button>
+          </div>
           <p className="text-muted-foreground text-lg">
             Professional-grade network performance testing
           </p>
