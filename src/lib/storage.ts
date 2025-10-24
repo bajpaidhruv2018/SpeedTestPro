@@ -5,7 +5,7 @@ export interface TestResult {
   createdAt: string;
   server: { id: string; name: string; region: string; url: string };
   client: { userAgent: string; platform: string; connectionType?: string };
-  testConfig: { mode: "quick" | "advanced"; durationSec: number; concurrency: number };
+  testConfig: { mode: "quick" | "standard" | "advanced"; durationSec: number; concurrency: number };
   download: { avgMbps: number; peakMbps: number; p95WindowMbps: number; stabilityScore: number; samples: [number, number][] };
   upload: { avgMbps: number; peakMbps: number; p95WindowMbps: number; stabilityScore: number; samples: [number, number][] };
   latency: {

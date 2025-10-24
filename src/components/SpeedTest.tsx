@@ -1,192 +1,355 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Gauge } from "lucide-react";
+import { Play, Square, History, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
+import { Progress } from "@/components/ui/progress";
+import { saveResult } from "@/lib/storage";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TestMetrics } from "./test/TestMetrics";
+import { TestCharts } from "./test/TestCharts";
+import { TestResults } from "./test/TestResults";
 
-type TestStatus = "idle" | "ping" | "download" | "upload" | "complete";
+type TestPhase = "idle" | "download" | "upload" | "loaded-latency" | "complete";
+type TestMode = "quick" | "standard" | "advanced";
+
+interface Server {
+  id: string;
+  name: string;
+  region: string;
+  url: string;
+}
+
+const servers: Server[] = [
+  { id: "auto", name: "Auto Select", region: "Auto", url: "" },
+  { id: "us-east", name: "US East", region: "Virginia", url: "" },
+  { id: "us-west", name: "US West", region: "California", url: "" },
+  { id: "eu-west", name: "EU West", region: "Ireland", url: "" },
+  { id: "asia-east", name: "Asia East", region: "Tokyo", url: "" },
+];
+
+interface WorkerResult {
+  downloadMbps: number;
+  downloadP95: number;
+  uploadMbps: number;
+  uploadP95: number;
+  idleLatencyMs: number;
+  idleLatencyP95: number;
+  idleJitterMs: number;
+  loadedLatencyMs: number;
+  loadedLatencyP95: number;
+  loadedJitterMs: number;
+  stabilityScore: number;
+  confidenceInterval: { lower: number; upper: number };
+  downloadSamples: Array<{ timeMs: number; mbps: number }>;
+  uploadSamples: Array<{ timeMs: number; mbps: number }>;
+  idleLatencySamples: Array<{ timeMs: number; rttMs: number }>;
+  loadedLatencySamples: Array<{ timeMs: number; rttMs: number }>;
+  bufferbloatRatio: number;
+}
 
 export const SpeedTest = () => {
-  const [status, setStatus] = useState<TestStatus>("idle");
-  const [ping, setPing] = useState<number>(0);
-  const [downloadSpeed, setDownloadSpeed] = useState<number>(0);
-  const [uploadSpeed, setUploadSpeed] = useState<number>(0);
+  const navigate = useNavigate();
+  const [isRunning, setIsRunning] = useState(false);
+  const [phase, setPhase] = useState<TestPhase>("idle");
+  const [mode, setMode] = useState<TestMode>("standard");
+  const [selectedServer, setSelectedServer] = useState<Server>(servers[0]);
+  const [result, setResult] = useState<WorkerResult | null>(null);
+  const [currentDownload, setCurrentDownload] = useState(0);
+  const [currentUpload, setCurrentUpload] = useState(0);
+  const [currentLatency, setCurrentLatency] = useState(0);
+  const [downloadSamples, setDownloadSamples] = useState<Array<{ timeMs: number; mbps: number }>>([]);
+  const [uploadSamples, setUploadSamples] = useState<Array<{ timeMs: number; mbps: number }>>([]);
+  const [latencySamples, setLatencySamples] = useState<Array<{ timeMs: number; rttMs: number }>>([]);
+  const workerRef = useRef<Worker | null>(null);
 
-  const measurePing = async () => {
-    const iterations = 3;
-    let totalPing = 0;
+  useEffect(() => {
+    workerRef.current = new Worker(
+      new URL("../workers/speedTest.worker.ts", import.meta.url),
+      { type: "module" }
+    );
 
-    for (let i = 0; i < iterations; i++) {
-      const start = performance.now();
-      try {
-        // Use a reliable endpoint that supports CORS
-        await fetch("https://cloudflare.com/cdn-cgi/trace", {
-          cache: "no-cache",
+    workerRef.current.onmessage = (e) => {
+      const { type, phase: newPhase, result: testResult, ...progress } = e.data;
+
+      if (type === "progress") {
+        setPhase(newPhase);
+        if (progress.downloadMbps) setCurrentDownload(progress.downloadMbps);
+        if (progress.uploadMbps) setCurrentUpload(progress.uploadMbps);
+        if (progress.idleLatencyMs) setCurrentLatency(progress.idleLatencyMs);
+        if (progress.loadedLatencyMs) setCurrentLatency(progress.loadedLatencyMs);
+        if (progress.downloadSamples) setDownloadSamples(progress.downloadSamples);
+        if (progress.uploadSamples) setUploadSamples(progress.uploadSamples);
+        if (progress.idleLatencySamples) setLatencySamples(progress.idleLatencySamples);
+        if (progress.loadedLatencySamples) setLatencySamples(progress.loadedLatencySamples);
+      } else if (type === "complete") {
+        setResult(testResult);
+        setPhase("complete");
+        setIsRunning(false);
+        
+        const qoe = calculateQoE(testResult);
+        const bufferbloatGrade = getBufferbloatGrade(testResult.bufferbloatRatio);
+        
+        const fullResult = {
+          id: crypto.randomUUID(),
+          createdAt: new Date().toISOString(),
+          server: selectedServer.id === "auto" 
+            ? { ...selectedServer, url: window.location.origin }
+            : selectedServer,
+          client: {
+            userAgent: navigator.userAgent,
+            platform: navigator.platform,
+            connectionType: (navigator as any).connection?.effectiveType,
+          },
+          testConfig: {
+            mode,
+            durationSec: mode === "quick" ? 15 : mode === "standard" ? 30 : 60,
+            concurrency: mode === "quick" ? 4 : mode === "standard" ? 6 : 8,
+          },
+          download: {
+            avgMbps: testResult.downloadMbps,
+            peakMbps: Math.max(...testResult.downloadSamples.map(s => s.mbps)),
+            p95WindowMbps: testResult.downloadP95,
+            stabilityScore: testResult.stabilityScore,
+            samples: testResult.downloadSamples.map(s => [s.timeMs, s.mbps] as [number, number]),
+          },
+          upload: {
+            avgMbps: testResult.uploadMbps,
+            peakMbps: Math.max(...testResult.uploadSamples.map(s => s.mbps)),
+            p95WindowMbps: testResult.uploadP95,
+            stabilityScore: testResult.stabilityScore,
+            samples: testResult.uploadSamples.map(s => [s.timeMs, s.mbps] as [number, number]),
+          },
+          latency: {
+            idle: {
+              medianMs: testResult.idleLatencyMs,
+              p95Ms: testResult.idleLatencyP95,
+              maxMs: Math.max(...testResult.idleLatencySamples.map(s => s.rttMs)),
+              jitterMs: testResult.idleJitterMs,
+              lossPct: 0,
+              samples: testResult.idleLatencySamples.map(s => [s.timeMs, s.rttMs] as [number, number]),
+            },
+            loaded: {
+              medianMs: testResult.loadedLatencyMs,
+              p95Ms: testResult.loadedLatencyP95,
+              maxMs: Math.max(...testResult.loadedLatencySamples.map(s => s.rttMs)),
+              jitterMs: testResult.loadedJitterMs,
+              lossPct: 0,
+              samples: testResult.loadedLatencySamples.map(s => [s.timeMs, s.rttMs] as [number, number]),
+            },
+          },
+          qoe,
+          diagnostics: {
+            bufferbloatGrade: bufferbloatGrade.grade,
+            ipv6: "Unknown",
+          },
+        };
+        
+        saveResult(fullResult).then(() => {
+          toast.success("Speed test completed and saved!");
         });
-        const end = performance.now();
-        totalPing += end - start;
-      } catch (error) {
-        console.error("Ping test error:", error);
-        // Fallback to estimate based on connection
-        return Math.round(20 + Math.random() * 30);
+      } else if (type === "error") {
+        toast.error(`Test error: ${e.data.error}`);
+        setIsRunning(false);
+        setPhase("idle");
       }
-    }
+    };
 
-    return Math.round(totalPing / iterations);
+    return () => {
+      workerRef.current?.terminate();
+    };
+  }, [selectedServer, mode]);
+
+  const calculateQoE = (result: WorkerResult) => {
+    const streaming = result.downloadMbps >= 25 && result.idleLatencyMs < 50 ? "4K Ready" :
+                      result.downloadMbps >= 10 && result.idleLatencyMs < 100 ? "HD Ready" :
+                      result.downloadMbps >= 5 ? "SD Ready" : "Limited";
+    
+    const calls = result.uploadMbps >= 3 && result.idleLatencyMs < 50 && result.idleJitterMs < 30 ? "Excellent" :
+                  result.uploadMbps >= 1.5 && result.idleLatencyMs < 100 ? "Good" :
+                  result.uploadMbps >= 0.5 ? "Fair" : "Poor";
+    
+    const gaming = result.idleLatencyMs < 30 && result.idleJitterMs < 10 ? "Competitive" :
+                   result.idleLatencyMs < 50 && result.idleJitterMs < 20 ? "Casual" :
+                   result.idleLatencyMs < 100 ? "Playable" : "Limited";
+    
+    return { streaming, calls, gaming };
   };
 
-  const measureDownloadSpeed = async () => {
-    try {
-      // Use a larger file for more accurate measurement
-      const testUrl = `https://speed.cloudflare.com/__down?bytes=10000000`; // 10MB
-      
-      const startTime = performance.now();
-      const response = await fetch(testUrl, { cache: "no-cache" });
-      const data = await response.blob();
-      const endTime = performance.now();
-      
-      const actualSize = data.size;
-      const durationInSeconds = (endTime - startTime) / 1000;
-      const speedBps = actualSize / durationInSeconds;
-      const speedMbps = (speedBps * 8) / (1024 * 1024);
-
-      return Math.round(speedMbps * 10) / 10;
-    } catch (error) {
-      console.error("Download test error:", error);
-      return 0;
-    }
+  const getBufferbloatGrade = (ratio: number) => {
+    if (ratio <= 1.3) return { grade: "A", color: "hsl(var(--chart-3))", desc: "Excellent" };
+    if (ratio <= 1.6) return { grade: "B", color: "hsl(var(--primary))", desc: "Good" };
+    if (ratio <= 2.0) return { grade: "C", color: "hsl(var(--chart-4))", desc: "Fair" };
+    if (ratio <= 3.0) return { grade: "D", color: "hsl(var(--chart-4))", desc: "Poor" };
+    if (ratio <= 4.0) return { grade: "E", color: "hsl(var(--destructive))", desc: "Bad" };
+    return { grade: "F", color: "hsl(var(--destructive))", desc: "Critical" };
   };
 
-  const measureUploadSpeed = async () => {
-    try {
-      // Create 5MB of random data as a Blob (not Uint8Array to avoid JSON serialization)
-      const dataSize = 5000000;
-      const buffer = new ArrayBuffer(dataSize);
-      const view = new Uint8Array(buffer);
-      for (let i = 0; i < dataSize; i++) {
-        view[i] = Math.floor(Math.random() * 256);
-      }
-      
-      // Create Blob from ArrayBuffer for proper binary upload
-      const blob = new Blob([buffer], { type: "application/octet-stream" });
-      
-      const startTime = performance.now();
-      await fetch("https://httpbin.org/post", {
-        method: "POST",
-        body: blob,
-        cache: "no-cache",
-      });
-      const endTime = performance.now();
+  const startTest = () => {
+    setIsRunning(true);
+    setPhase("idle");
+    setResult(null);
+    setCurrentDownload(0);
+    setCurrentUpload(0);
+    setCurrentLatency(0);
+    setDownloadSamples([]);
+    setUploadSamples([]);
+    setLatencySamples([]);
 
-      const durationInSeconds = (endTime - startTime) / 1000;
-      const speedBps = dataSize / durationInSeconds;
-      const speedMbps = (speedBps * 8) / (1024 * 1024);
+    const baseUrl = `https://ivbkofpclxcczgkwbrri.supabase.co/functions/v1`;
 
-      return Math.round(speedMbps * 10) / 10;
-    } catch (error) {
-      console.error("Upload test error:", error);
-      return 0;
-    }
+    workerRef.current?.postMessage({
+      type: "start",
+      config: {
+        mode,
+        concurrency: mode === "quick" ? 4 : mode === "standard" ? 6 : 8,
+        durationSec: mode === "quick" ? 15 : mode === "standard" ? 30 : 60,
+        baseUrl,
+      },
+    });
   };
 
-  const runSpeedTest = async () => {
-    setPing(0);
-    setDownloadSpeed(0);
-    setUploadSpeed(0);
-
-    // Ping Test
-    setStatus("ping");
-    const pingResult = await measurePing();
-    setPing(pingResult);
-
-    // Download Test
-    setStatus("download");
-    const downloadResult = await measureDownloadSpeed();
-    setDownloadSpeed(downloadResult);
-
-    // Upload Test
-    setStatus("upload");
-    const uploadResult = await measureUploadSpeed();
-    setUploadSpeed(uploadResult);
-
-    setStatus("complete");
-    toast.success("Speed test completed!");
+  const stopTest = () => {
+    workerRef.current?.postMessage({ type: "stop" });
+    setIsRunning(false);
+    setPhase("idle");
   };
 
-  const getStatusText = () => {
-    switch (status) {
-      case "ping":
-        return "Measuring ping...";
-      case "download":
-        return "Testing download speed...";
-      case "upload":
-        return "Testing upload speed...";
-      case "complete":
-        return "Test complete!";
-      default:
-        return "Ready to test";
+  const getPhaseText = () => {
+    switch (phase) {
+      case "idle": return "Measuring baseline latency...";
+      case "download": return "Testing download speed...";
+      case "upload": return "Testing upload speed...";
+      case "loaded-latency": return "Measuring bufferbloat (loaded latency)...";
+      case "complete": return "Test complete!";
+      default: return "Ready to test";
     }
   };
+
+  const progressValue = phase === "idle" ? 25 : phase === "download" ? 50 : phase === "upload" ? 75 : phase === "loaded-latency" ? 90 : 100;
+  const bufferbloat = result ? getBufferbloatGrade(result.bufferbloatRatio) : null;
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-background via-background to-card">
-      <div className="w-full max-w-4xl space-y-6">
-        <div className="text-center space-y-2 mb-8">
-          <h1 className="text-5xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-            Internet Speed Test
-          </h1>
+      <div className="w-full max-w-7xl space-y-6">
+        {/* Header */}
+        <div className="text-center space-y-3">
+          <div className="flex items-center justify-center gap-4">
+            <h1 className="text-5xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+              Speed Test Pro
+            </h1>
+            <Button variant="outline" onClick={() => navigate("/history")} className="gap-2">
+              <History className="h-4 w-4" />
+              History
+            </Button>
+          </div>
           <p className="text-muted-foreground text-lg">
-            Test your connection speed instantly
+            Professional-grade network performance testing with real-time analytics
           </p>
         </div>
 
-        <Card className="p-8 bg-card/50 backdrop-blur border-border/50 shadow-xl">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            {/* Ping */}
-            <div className="text-center p-6 rounded-xl bg-background/50 border border-border/50">
-              <div className="text-sm text-muted-foreground mb-2">PING</div>
-              <div className={`text-4xl font-bold ${status === "ping" ? "text-primary animate-pulse" : "text-foreground"}`}>
-                {ping}
-                <span className="text-xl ml-1">ms</span>
-              </div>
-            </div>
+        {/* Configuration */}
+        <div className="flex flex-col sm:flex-row justify-center items-center gap-4">
+          <Tabs value={mode} onValueChange={(v) => !isRunning && setMode(v as TestMode)} className="w-full sm:w-auto">
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="quick" disabled={isRunning}>Quick (15s)</TabsTrigger>
+              <TabsTrigger value="standard" disabled={isRunning}>Standard (30s)</TabsTrigger>
+              <TabsTrigger value="advanced" disabled={isRunning}>Advanced (60s)</TabsTrigger>
+            </TabsList>
+          </Tabs>
 
-            {/* Download */}
-            <div className="text-center p-6 rounded-xl bg-background/50 border border-border/50">
-              <div className="text-sm text-muted-foreground mb-2">DOWNLOAD</div>
-              <div className={`text-4xl font-bold ${status === "download" ? "text-primary animate-pulse" : "text-foreground"}`}>
-                {downloadSpeed}
-                <span className="text-xl ml-1">Mbps</span>
-              </div>
-            </div>
+          <Select
+            value={selectedServer.id}
+            onValueChange={(v) => !isRunning && setSelectedServer(servers.find(s => s.id === v) || servers[0])}
+            disabled={isRunning}
+          >
+            <SelectTrigger className="w-full sm:w-[200px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {servers.map(server => (
+                <SelectItem key={server.id} value={server.id}>
+                  {server.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
-            {/* Upload */}
-            <div className="text-center p-6 rounded-xl bg-background/50 border border-border/50">
-              <div className="text-sm text-muted-foreground mb-2">UPLOAD</div>
-              <div className={`text-4xl font-bold ${status === "upload" ? "text-primary animate-pulse" : "text-foreground"}`}>
-                {uploadSpeed}
-                <span className="text-xl ml-1">Mbps</span>
-              </div>
-            </div>
-          </div>
+        {/* Main Card */}
+        <Card className="p-6 md:p-8 bg-card/50 backdrop-blur border-border/50 shadow-[var(--shadow-elegant)]">
+          <TestMetrics
+            phase={phase}
+            isRunning={isRunning}
+            currentDownload={currentDownload}
+            currentUpload={currentUpload}
+            currentLatency={currentLatency}
+            result={result}
+          />
 
-          <div className="text-center space-y-4">
-            <div className="text-sm text-muted-foreground">{getStatusText()}</div>
-            
+          {isRunning && downloadSamples.length > 0 && (
+            <TestCharts
+              phase={phase}
+              downloadSamples={downloadSamples}
+              uploadSamples={uploadSamples}
+              latencySamples={latencySamples}
+            />
+          )}
+
+          {result && bufferbloat && (
+            <TestResults result={result} bufferbloat={bufferbloat} qoe={calculateQoE(result)} />
+          )}
+
+          {isRunning && (
+            <div className="mb-6 mt-6">
+              <div className="flex justify-between text-sm text-muted-foreground mb-2">
+                <span>{getPhaseText()}</span>
+                <span>{progressValue}%</span>
+              </div>
+              <Progress value={progressValue} className="h-2" />
+            </div>
+          )}
+
+          {/* Control Button */}
+          <div className="text-center space-y-4 mt-6">
             <Button
-              onClick={runSpeedTest}
-              disabled={status !== "idle" && status !== "complete"}
+              onClick={isRunning ? stopTest : startTest}
               size="lg"
-              className="relative px-12 py-6 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shadow-[0_0_30px_rgba(14,165,233,0.4)] hover:shadow-[0_0_40px_rgba(14,165,233,0.6)] transition-all duration-300"
+              className={`relative px-12 py-6 text-lg font-semibold transition-all duration-300 ${
+                isRunning
+                  ? "bg-destructive hover:bg-destructive/90"
+                  : "bg-gradient-to-r from-primary to-accent hover:opacity-90"
+              }`}
+              style={!isRunning ? { boxShadow: 'var(--shadow-glow)' } : {}}
             >
-              <Gauge className="mr-2 h-6 w-6" />
-              {status === "idle" || status === "complete" ? "Start Test" : "Testing..."}
+              {isRunning ? (
+                <>
+                  <Square className="mr-2 h-6 w-6" />
+                  Stop Test
+                </>
+              ) : (
+                <>
+                  <Play className="mr-2 h-6 w-6" />
+                  Start {mode === "quick" ? "Quick" : mode === "standard" ? "Standard" : "Advanced"} Test
+                </>
+              )}
             </Button>
           </div>
+
+          {result && (
+            <div className="mt-6 text-center text-sm text-muted-foreground">
+              <div className="flex items-center justify-center gap-2">
+                <TrendingUp className="h-4 w-4" />
+                Confidence Interval (95%): {result.confidenceInterval.lower.toFixed(1)} - {result.confidenceInterval.upper.toFixed(1)} Mbps
+              </div>
+            </div>
+          )}
         </Card>
 
         <div className="text-center text-sm text-muted-foreground">
-          <p>Tests may take up to 30 seconds to complete</p>
+          <p>Tests run in Web Workers for smooth performance • Results saved locally with IndexedDB</p>
         </div>
       </div>
     </div>
