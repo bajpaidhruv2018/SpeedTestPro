@@ -110,10 +110,13 @@ async function measureUpload(config: TestConfig): Promise<ThroughputSample[]> {
   const startTime = performance.now();
 
   const connections = Array.from({ length: config.concurrency }, async () => {
-    const data = new ArrayBuffer(chunkSize);
-    const view = new Uint8Array(data);
-    crypto.getRandomValues(view);
-    const blob = new Blob([data]);
+    // Create upload payload; fill with random bytes in 64KB chunks to respect Web Crypto limits
+    const data = new Uint8Array(chunkSize);
+    for (let offset = 0; offset < chunkSize; offset += 65536) {
+      const len = Math.min(65536, chunkSize - offset);
+      crypto.getRandomValues(data.subarray(offset, offset + len));
+    }
+    const blob = new Blob([data.buffer], { type: 'application/octet-stream' });
 
     const uploadStart = performance.now();
     await fetch(`${config.baseUrl}/speed-upload`, {
