@@ -12,6 +12,8 @@ Deno.serve(async (req) => {
     const startTime = performance.now();
     let receivedBytes = 0;
 
+    console.log('Upload test started');
+
     // Stream the body and count bytes without storing
     if (req.body) {
       const reader = req.body.getReader();

@@ -19,6 +19,8 @@ Deno.serve(async (req) => {
     const chunkSize = 1024 * 1024; // 1MB
     const chunk = new Uint8Array(chunkSize);
     crypto.getRandomValues(chunk);
+    
+    console.log(`Starting download stream of ${size} bytes...`);
 
     const stream = new ReadableStream({
       start(controller) {

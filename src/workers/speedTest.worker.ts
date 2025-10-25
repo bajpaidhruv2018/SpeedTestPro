@@ -54,13 +54,14 @@ function calculateStats(samples: number[]) {
 // Measure download speed
 async function measureDownload(config: TestConfig): Promise<ThroughputSample[]> {
   const samples: ThroughputSample[] = [];
-  const fileSize = 5_000_000; // 5MB per connection
+  const fileSize = 10_000_000; // 10MB per connection
   const startTime = performance.now();
-  let totalBytes = 0;
-  let lastSampleTime = startTime;
-  let lastSampleBytes = 0;
+  const bytesPerConnection: number[] = [];
+  let sampleInterval: number;
 
-  const connections = Array.from({ length: config.concurrency }, async () => {
+  const connections = Array.from({ length: config.concurrency }, async (_, index) => {
+    bytesPerConnection[index] = 0;
+    
     const response = await fetch(
       `${config.baseUrl}/speed-download?size=${fileSize}&rid=${Math.random()}`,
       { cache: 'no-store' }
@@ -73,33 +74,46 @@ async function measureDownload(config: TestConfig): Promise<ThroughputSample[]> 
       const { done, value } = await reader.read();
       if (done) break;
       
-      totalBytes += value.length;
-      
-      const now = performance.now();
-      if (now - lastSampleTime >= 200) {
-        const elapsedSec = (now - lastSampleTime) / 1000;
-        const bytesDelta = totalBytes - lastSampleBytes;
-        const mbps = (bytesDelta * 8) / (elapsedSec * 1_000_000);
-        
-        samples.push({
-          timeMs: now - startTime,
-          mbps,
-        });
-        
-        lastSampleTime = now;
-        lastSampleBytes = totalBytes;
-        
-        self.postMessage({
-          type: 'progress',
-          phase: 'download',
-          downloadMbps: mbps,
-          downloadSamples: samples,
-        });
-      }
+      bytesPerConnection[index] += value.length;
     }
   });
 
+  // Sample throughput every 200ms
+  sampleInterval = setInterval(() => {
+    const now = performance.now();
+    const elapsedSec = (now - startTime) / 1000;
+    const totalBytes = bytesPerConnection.reduce((sum, bytes) => sum + bytes, 0);
+    
+    if (totalBytes > 0 && elapsedSec > 0) {
+      const mbps = (totalBytes * 8) / (elapsedSec * 1_000_000);
+      
+      samples.push({
+        timeMs: now - startTime,
+        mbps,
+      });
+      
+      self.postMessage({
+        type: 'progress',
+        phase: 'download',
+        downloadMbps: mbps,
+        downloadSamples: samples,
+      });
+    }
+  }, 200) as unknown as number;
+
   await Promise.all(connections);
+  clearInterval(sampleInterval);
+  
+  // Final sample
+  const totalTime = (performance.now() - startTime) / 1000;
+  const totalBytes = bytesPerConnection.reduce((sum, bytes) => sum + bytes, 0);
+  const finalMbps = (totalBytes * 8) / (totalTime * 1_000_000);
+  
+  samples.push({
+    timeMs: performance.now() - startTime,
+    mbps: finalMbps,
+  });
+  
   return samples;
 }
 
@@ -108,8 +122,9 @@ async function measureUpload(config: TestConfig): Promise<ThroughputSample[]> {
   const samples: ThroughputSample[] = [];
   const chunkSize = 5_000_000; // 5MB per connection
   const startTime = performance.now();
+  const uploadTimes: number[] = [];
 
-  const connections = Array.from({ length: config.concurrency }, async () => {
+  const connections = Array.from({ length: config.concurrency }, async (_, index) => {
     // Create upload payload; fill with random bytes in 64KB chunks to respect Web Crypto limits
     const data = new Uint8Array(chunkSize);
     for (let offset = 0; offset < chunkSize; offset += 65536) {
@@ -126,8 +141,13 @@ async function measureUpload(config: TestConfig): Promise<ThroughputSample[]> {
     });
     const uploadEnd = performance.now();
 
-    const elapsedSec = (uploadEnd - uploadStart) / 1000;
-    const mbps = (chunkSize * 8) / (elapsedSec * 1_000_000);
+    uploadTimes[index] = uploadEnd - uploadStart;
+    
+    // Calculate aggregate throughput
+    const completedUploads = uploadTimes.filter(t => t > 0).length;
+    const totalBytes = completedUploads * chunkSize;
+    const elapsedSec = (uploadEnd - startTime) / 1000;
+    const mbps = (totalBytes * 8) / (elapsedSec * 1_000_000);
 
     samples.push({
       timeMs: uploadEnd - startTime,
