@@ -66,12 +66,13 @@ export const SpeedTest = () => {
   const workerRef = useRef<Worker | null>(null);
 
   useEffect(() => {
-    workerRef.current = new Worker(
-      new URL("../workers/speedTest.worker.ts", import.meta.url),
-      { type: "module" }
-    );
+    try {
+      workerRef.current = new Worker(
+        new URL("../workers/speedTest.worker.ts", import.meta.url),
+        { type: "module" }
+      );
 
-    workerRef.current.onmessage = (e) => {
+      workerRef.current.onmessage = (e) => {
       const { type, phase: newPhase, result: testResult, ...progress } = e.data;
 
       if (type === "progress") {
@@ -157,6 +158,17 @@ export const SpeedTest = () => {
       }
     };
 
+      workerRef.current.onerror = (error) => {
+        console.error('Worker error:', error);
+        toast.error('Test worker failed to initialize');
+        setIsRunning(false);
+        setPhase("idle");
+      };
+    } catch (error) {
+      console.error('Failed to create worker:', error);
+      toast.error('Failed to initialize speed test worker');
+    }
+
     return () => {
       workerRef.current?.terminate();
     };
@@ -188,6 +200,11 @@ export const SpeedTest = () => {
   };
 
   const startTest = () => {
+    if (!workerRef.current) {
+      toast.error('Test worker not initialized. Please refresh the page.');
+      return;
+    }
+
     setIsRunning(true);
     setPhase("idle");
     setResult(null);
@@ -200,15 +217,22 @@ export const SpeedTest = () => {
 
     const baseUrl = `https://ivbkofpclxcczgkwbrri.supabase.co/functions/v1`;
 
-    workerRef.current?.postMessage({
-      type: "start",
-      config: {
-        mode,
-        concurrency: mode === "quick" ? 4 : mode === "standard" ? 6 : 8,
-        durationSec: mode === "quick" ? 15 : mode === "standard" ? 30 : 60,
-        baseUrl,
-      },
-    });
+    try {
+      workerRef.current.postMessage({
+        type: "start",
+        config: {
+          mode,
+          concurrency: mode === "quick" ? 4 : mode === "standard" ? 6 : 8,
+          durationSec: mode === "quick" ? 15 : mode === "standard" ? 30 : 60,
+          baseUrl,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to start test:', error);
+      toast.error('Failed to start test. Please try again.');
+      setIsRunning(false);
+      setPhase("idle");
+    }
   };
 
   const stopTest = () => {
@@ -323,15 +347,16 @@ export const SpeedTest = () => {
                   : "bg-gradient-to-r from-primary to-accent hover:opacity-90"
               }`}
               style={!isRunning ? { boxShadow: 'var(--shadow-glow)' } : {}}
+              aria-label={isRunning ? "Stop speed test" : `Start ${mode} speed test`}
             >
               {isRunning ? (
                 <>
-                  <Square className="mr-2 h-6 w-6" />
+                  <Square className="mr-2 h-6 w-6" aria-hidden="true" />
                   Stop Test
                 </>
               ) : (
                 <>
-                  <Play className="mr-2 h-6 w-6" />
+                  <Play className="mr-2 h-6 w-6" aria-hidden="true" />
                   Start {mode === "quick" ? "Quick" : mode === "standard" ? "Standard" : "Advanced"} Test
                 </>
               )}

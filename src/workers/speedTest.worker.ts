@@ -2,7 +2,7 @@
 // Runs tests in background to keep UI smooth
 
 interface TestConfig {
-  mode: 'quick' | 'advanced';
+  mode: 'quick' | 'standard' | 'advanced';
   concurrency: number;
   durationSec: number;
   baseUrl: string;
@@ -152,7 +152,7 @@ async function measureIdleLatency(config: TestConfig): Promise<LatencySample[]> 
     wsConnection = new WebSocket(`${wsUrl}/speed-ping`);
     const startTime = performance.now();
     let pingCount = 0;
-    const maxPings = config.mode === 'quick' ? 10 : 30;
+    const maxPings = config.mode === 'quick' ? 10 : config.mode === 'standard' ? 20 : 30;
     let pingInterval: number;
 
     wsConnection.onopen = () => {
@@ -219,7 +219,7 @@ async function measureLoadedLatency(
     wsConnection = new WebSocket(`${wsUrl}/speed-ping`);
     const startTime = performance.now();
     let pingCount = 0;
-    const maxPings = config.mode === 'quick' ? 15 : 40;
+    const maxPings = config.mode === 'quick' ? 15 : config.mode === 'standard' ? 25 : 40;
     let pingInterval: number;
 
     // Start saturation traffic

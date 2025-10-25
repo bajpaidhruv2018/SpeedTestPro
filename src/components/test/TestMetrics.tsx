@@ -20,9 +20,13 @@ export const TestMetrics = ({
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
       {/* Download */}
-      <div className="text-center p-6 rounded-xl bg-gradient-to-br from-background/80 to-background/40 border border-border/50 transition-all duration-300 hover:shadow-[var(--shadow-elegant)]">
+      <div 
+        className="text-center p-6 rounded-xl bg-gradient-to-br from-background/80 to-background/40 border border-border/50 transition-all duration-300 hover:shadow-[var(--shadow-elegant)]"
+        role="region"
+        aria-label="Download speed"
+      >
         <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground mb-2">
-          <Download className="h-4 w-4" />
+          <Download className="h-4 w-4" aria-hidden="true" />
           DOWNLOAD
         </div>
         <div
@@ -31,6 +35,8 @@ export const TestMetrics = ({
               ? "text-primary animate-pulse scale-110"
               : "text-foreground"
           }`}
+          aria-live="polite"
+          aria-atomic="true"
         >
           {result?.downloadMbps.toFixed(1) || currentDownload.toFixed(1)}
           <span className="text-2xl ml-1">Mbps</span>
@@ -50,9 +56,13 @@ export const TestMetrics = ({
       </div>
 
       {/* Upload */}
-      <div className="text-center p-6 rounded-xl bg-gradient-to-br from-background/80 to-background/40 border border-border/50 transition-all duration-300 hover:shadow-[var(--shadow-elegant)]">
+      <div 
+        className="text-center p-6 rounded-xl bg-gradient-to-br from-background/80 to-background/40 border border-border/50 transition-all duration-300 hover:shadow-[var(--shadow-elegant)]"
+        role="region"
+        aria-label="Upload speed"
+      >
         <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground mb-2">
-          <Upload className="h-4 w-4" />
+          <Upload className="h-4 w-4" aria-hidden="true" />
           UPLOAD
         </div>
         <div
@@ -61,6 +71,8 @@ export const TestMetrics = ({
               ? "text-primary animate-pulse scale-110"
               : "text-foreground"
           }`}
+          aria-live="polite"
+          aria-atomic="true"
         >
           {result?.uploadMbps.toFixed(1) || currentUpload.toFixed(1)}
           <span className="text-2xl ml-1">Mbps</span>
@@ -74,9 +86,13 @@ export const TestMetrics = ({
       </div>
 
       {/* Latency */}
-      <div className="text-center p-6 rounded-xl bg-gradient-to-br from-background/80 to-background/40 border border-border/50 transition-all duration-300 hover:shadow-[var(--shadow-elegant)]">
+      <div 
+        className="text-center p-6 rounded-xl bg-gradient-to-br from-background/80 to-background/40 border border-border/50 transition-all duration-300 hover:shadow-[var(--shadow-elegant)]"
+        role="region"
+        aria-label="Latency"
+      >
         <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground mb-2">
-          <Activity className="h-4 w-4" />
+          <Activity className="h-4 w-4" aria-hidden="true" />
           LATENCY
         </div>
         <div
@@ -85,6 +101,8 @@ export const TestMetrics = ({
               ? "text-primary animate-pulse scale-110"
               : "text-foreground"
           }`}
+          aria-live="polite"
+          aria-atomic="true"
         >
           {result?.idleLatencyMs.toFixed(0) || currentLatency.toFixed(0)}
           <span className="text-2xl ml-1">ms</span>
