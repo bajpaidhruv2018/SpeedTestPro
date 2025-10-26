@@ -53,6 +53,7 @@ function calculateStats(samples: number[]) {
 
 // Measure download speed
 async function measureDownload(config: TestConfig): Promise<ThroughputSample[]> {
+  console.log('[Worker] Starting download test with config:', config);
   const samples: ThroughputSample[] = [];
   const fileSize = 10_000_000; // 10MB per connection
   const startTime = performance.now();
@@ -61,14 +62,19 @@ async function measureDownload(config: TestConfig): Promise<ThroughputSample[]> 
 
   const connections = Array.from({ length: config.concurrency }, async (_, index) => {
     bytesPerConnection[index] = 0;
+    console.log(`[Worker] Starting download connection ${index}`);
     
-    const response = await fetch(
-      `${config.baseUrl}/speed-download?size=${fileSize}&rid=${Math.random()}`,
-      { cache: 'no-store' }
-    );
+    const url = `${config.baseUrl}/speed-download?size=${fileSize}&rid=${Math.random()}`;
+    console.log(`[Worker] Fetching download from: ${url}`);
+    
+    const response = await fetch(url, { cache: 'no-store' });
+    console.log(`[Worker] Download response status: ${response.status}`);
     
     const reader = response.body?.getReader();
-    if (!reader) return;
+    if (!reader) {
+      console.error('[Worker] No reader available for download');
+      return;
+    }
 
     while (true) {
       const { done, value } = await reader.read();
@@ -171,8 +177,10 @@ async function measureIdleLatency(config: TestConfig): Promise<LatencySample[]> 
   return new Promise((resolve) => {
     const samples: LatencySample[] = [];
     const wsUrl = config.baseUrl.replace('https://', 'wss://').replace('http://', 'ws://');
+    const fullWsUrl = `${wsUrl}/speed-ping`;
+    console.log('[Worker] Connecting to WebSocket for idle latency:', fullWsUrl);
     
-    wsConnection = new WebSocket(`${wsUrl}/speed-ping`);
+    wsConnection = new WebSocket(fullWsUrl);
     const startTime = performance.now();
     let pingCount = 0;
     const maxPings = config.mode === 'quick' ? 10 : config.mode === 'standard' ? 20 : 30;
@@ -307,7 +315,8 @@ self.onmessage = async (e) => {
 
   if (type === 'start') {
     testStartTime = performance.now();
-    console.log('[Worker] Starting speed test:', config);
+    console.log('[Worker] Starting speed test with config:', config);
+    console.log('[Worker] Base URL:', config.baseUrl);
 
     try {
       // 1. Measure idle latency
