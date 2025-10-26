@@ -77,10 +77,10 @@ export const SpeedTest = () => {
 
       if (type === "progress") {
         setPhase(newPhase);
-        if (progress.downloadMbps) setCurrentDownload(progress.downloadMbps);
-        if (progress.uploadMbps) setCurrentUpload(progress.uploadMbps);
-        if (progress.idleLatencyMs) setCurrentLatency(progress.idleLatencyMs);
-        if (progress.loadedLatencyMs) setCurrentLatency(progress.loadedLatencyMs);
+        if (typeof progress.downloadMbps === 'number') setCurrentDownload(progress.downloadMbps);
+        if (typeof progress.uploadMbps === 'number') setCurrentUpload(progress.uploadMbps);
+        if (typeof progress.idleLatencyMs === 'number') setCurrentLatency(progress.idleLatencyMs);
+        if (typeof progress.loadedLatencyMs === 'number') setCurrentLatency(progress.loadedLatencyMs);
         if (progress.downloadSamples) setDownloadSamples(progress.downloadSamples);
         if (progress.uploadSamples) setUploadSamples(progress.uploadSamples);
         if (progress.idleLatencySamples) setLatencySamples(progress.idleLatencySamples);
@@ -215,7 +215,7 @@ export const SpeedTest = () => {
     setUploadSamples([]);
     setLatencySamples([]);
 
-    const baseUrl = `https://ivbkofpclxcczgkwbrri.supabase.co/functions/v1`;
+    const baseUrl = `https://ivbkofpclxcczgkwbrri.functions.supabase.co/functions/v1`;
 
     try {
       workerRef.current.postMessage({

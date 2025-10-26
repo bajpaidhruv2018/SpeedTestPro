@@ -244,10 +244,13 @@ async function measureLoadedLatency(
   uploadSamples: ThroughputSample[]
 ): Promise<LatencySample[]> {
   const samples: LatencySample[] = [];
-  const wsUrl = config.baseUrl.replace('https://', 'wss://').replace('http://', 'ws://');
+  const base = new URL(config.baseUrl);
+  const proto = base.protocol === 'https:' ? 'wss' : 'ws';
+  const host = base.host.replace('.supabase.co', '.functions.supabase.co');
+  const wsBase = `${proto}://${host}${base.pathname}`;
   
   return new Promise((resolve) => {
-    wsConnection = new WebSocket(`${wsUrl}/speed-ping`);
+    wsConnection = new WebSocket(`${wsBase}/speed-ping`);
     const startTime = performance.now();
     let pingCount = 0;
     const maxPings = config.mode === 'quick' ? 15 : config.mode === 'standard' ? 25 : 40;

@@ -1,1 +1,10 @@
 project_id = "ivbkofpclxcczgkwbrri"
+
+[functions.speed-download]
+verify_jwt = false
+
+[functions.speed-upload]
+verify_jwt = false
+
+[functions.speed-ping]
+verify_jwt = false
