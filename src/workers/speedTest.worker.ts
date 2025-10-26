@@ -55,120 +55,131 @@ function calculateStats(samples: number[]) {
 async function measureDownload(config: TestConfig): Promise<ThroughputSample[]> {
   console.log('[Worker] Starting download test with config:', config);
   const samples: ThroughputSample[] = [];
-  const fileSize = 10_000_000; // 10MB per connection
+  const fileSize = 10_000_000; // 10MB per request
   const startTime = performance.now();
-  const bytesPerConnection: number[] = [];
-  let sampleInterval: number;
+  const stopAt = startTime + config.durationSec * 1000;
 
-  const connections = Array.from({ length: config.concurrency }, async (_, index) => {
-    bytesPerConnection[index] = 0;
-    console.log(`[Worker] Starting download connection ${index}`);
-    
-    const url = `${config.baseUrl}/speed-download?size=${fileSize}&rid=${Math.random()}`;
-    console.log(`[Worker] Fetching download from: ${url}`);
-    
-    const response = await fetch(url, { cache: 'no-store' });
-    console.log(`[Worker] Download response status: ${response.status}`);
-    
-    const reader = response.body?.getReader();
-    if (!reader) {
-      console.error('[Worker] No reader available for download');
-      return;
-    }
+  // Track totals for instantaneous rate
+  let totalBytes = 0;
+  let lastBytes = 0;
+  let lastTime = startTime;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      bytesPerConnection[index] += value.length;
-    }
-  });
-
-  // Sample throughput every 200ms
-  sampleInterval = setInterval(() => {
+  // Sampler for instantaneous Mbps over small window
+  const sampler = setInterval(() => {
     const now = performance.now();
-    const elapsedSec = (now - startTime) / 1000;
-    const totalBytes = bytesPerConnection.reduce((sum, bytes) => sum + bytes, 0);
-    
-    if (totalBytes > 0 && elapsedSec > 0) {
-      const mbps = (totalBytes * 8) / (elapsedSec * 1_000_000);
-      
-      samples.push({
-        timeMs: now - startTime,
-        mbps,
-      });
-      
-      self.postMessage({
+    const deltaBytes = totalBytes - lastBytes;
+    const deltaTimeMs = now - lastTime;
+    if (deltaTimeMs > 0) {
+      const mbps = (deltaBytes * 8) / ((deltaTimeMs / 1000) * 1_000_000);
+      samples.push({ timeMs: now - startTime, mbps });
+      (self as any).postMessage({
         type: 'progress',
         phase: 'download',
         downloadMbps: mbps,
         downloadSamples: samples,
       });
+      lastBytes = totalBytes;
+      lastTime = now;
     }
-  }, 200) as unknown as number;
+  }, 250) as unknown as number;
 
+  // Connection loop runner
+  const connectionLoop = async (idx: number) => {
+    while (performance.now() < stopAt) {
+      const url = `${config.baseUrl}/speed-download?size=${fileSize}&rid=${Math.random()}`;
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        const reader = res.body?.getReader();
+        if (!reader) break;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          totalBytes += value.length;
+          if (performance.now() >= stopAt) {
+            try { await reader.cancel(); } catch {}
+            break;
+          }
+        }
+      } catch (err) {
+        console.error('[Worker] download connection error', idx, err);
+        break;
+      }
+    }
+  };
+
+  const connections = Array.from({ length: config.concurrency }, (_, i) => connectionLoop(i));
   await Promise.all(connections);
-  clearInterval(sampleInterval);
-  
-  // Final sample
-  const totalTime = (performance.now() - startTime) / 1000;
-  const totalBytes = bytesPerConnection.reduce((sum, bytes) => sum + bytes, 0);
-  const finalMbps = (totalBytes * 8) / (totalTime * 1_000_000);
-  
-  samples.push({
-    timeMs: performance.now() - startTime,
-    mbps: finalMbps,
-  });
-  
+  clearInterval(sampler);
+
+  // Final aggregate sample (overall average)
+  const totalTimeSec = (performance.now() - startTime) / 1000;
+  if (totalTimeSec > 0) {
+    const avgMbps = (totalBytes * 8) / (totalTimeSec * 1_000_000);
+    samples.push({ timeMs: performance.now() - startTime, mbps: avgMbps });
+  }
+
   return samples;
 }
 
 // Measure upload speed
 async function measureUpload(config: TestConfig): Promise<ThroughputSample[]> {
   const samples: ThroughputSample[] = [];
-  const chunkSize = 5_000_000; // 5MB per connection
+  const CHUNK_SIZE = 1_000_000; // 1MB per request for smoother sampling
   const startTime = performance.now();
-  const uploadTimes: number[] = [];
+  const stopAt = startTime + config.durationSec * 1000;
 
-  const connections = Array.from({ length: config.concurrency }, async (_, index) => {
-    // Create upload payload; fill with random bytes in 64KB chunks to respect Web Crypto limits
-    const data = new Uint8Array(chunkSize);
-    for (let offset = 0; offset < chunkSize; offset += 65536) {
-      const len = Math.min(65536, chunkSize - offset);
-      crypto.getRandomValues(data.subarray(offset, offset + len));
+  let totalUploaded = 0;
+  let lastBytes = 0;
+  let lastTime = startTime;
+
+  // Prebuild a chunk (no need for random content here)
+  const payload = new Uint8Array(CHUNK_SIZE).fill(1);
+  const sampler = setInterval(() => {
+    const now = performance.now();
+    const deltaBytes = totalUploaded - lastBytes;
+    const deltaTimeMs = now - lastTime;
+    if (deltaTimeMs > 0) {
+      const mbps = (deltaBytes * 8) / ((deltaTimeMs / 1000) * 1_000_000);
+      samples.push({ timeMs: now - startTime, mbps });
+      (self as any).postMessage({
+        type: 'progress',
+        phase: 'upload',
+        uploadMbps: mbps,
+        uploadSamples: samples,
+      });
+      lastBytes = totalUploaded;
+      lastTime = now;
     }
-    const blob = new Blob([data.buffer], { type: 'application/octet-stream' });
+  }, 250) as unknown as number;
 
-    const uploadStart = performance.now();
-    await fetch(`${config.baseUrl}/speed-upload`, {
-      method: 'POST',
-      body: blob,
-      cache: 'no-store',
-    });
-    const uploadEnd = performance.now();
+  const connectionLoop = async (idx: number) => {
+    while (performance.now() < stopAt) {
+      try {
+        const blob = new Blob([payload.buffer], { type: 'application/octet-stream' });
+        await fetch(`${config.baseUrl}/speed-upload?rid=${Math.random()}` , {
+          method: 'POST',
+          body: blob,
+          cache: 'no-store',
+        });
+        totalUploaded += CHUNK_SIZE;
+      } catch (err) {
+        console.error('[Worker] upload connection error', idx, err);
+        break;
+      }
+    }
+  };
 
-    uploadTimes[index] = uploadEnd - uploadStart;
-    
-    // Calculate aggregate throughput
-    const completedUploads = uploadTimes.filter(t => t > 0).length;
-    const totalBytes = completedUploads * chunkSize;
-    const elapsedSec = (uploadEnd - startTime) / 1000;
-    const mbps = (totalBytes * 8) / (elapsedSec * 1_000_000);
-
-    samples.push({
-      timeMs: uploadEnd - startTime,
-      mbps,
-    });
-
-    self.postMessage({
-      type: 'progress',
-      phase: 'upload',
-      uploadMbps: mbps,
-      uploadSamples: samples,
-    });
-  });
-
+  const connections = Array.from({ length: config.concurrency }, (_, i) => connectionLoop(i));
   await Promise.all(connections);
+  clearInterval(sampler);
+
+  // Final aggregate sample
+  const totalTimeSec = (performance.now() - startTime) / 1000;
+  if (totalTimeSec > 0) {
+    const avgMbps = (totalUploaded * 8) / (totalTimeSec * 1_000_000);
+    samples.push({ timeMs: performance.now() - startTime, mbps: avgMbps });
+  }
+
   return samples;
 }
 
@@ -256,10 +267,10 @@ async function measureLoadedLatency(
     const maxPings = config.mode === 'quick' ? 15 : config.mode === 'standard' ? 25 : 40;
     let pingInterval: number;
 
-    // Start saturation traffic
+    const satConfig: TestConfig = { ...config, durationSec: config.mode === 'quick' ? 5 : config.mode === 'standard' ? 8 : 10 };
     const saturationPromise = Promise.all([
-      measureDownload(config),
-      measureUpload(config),
+      measureDownload(satConfig),
+      measureUpload(satConfig),
     ]);
 
     wsConnection.onopen = () => {
