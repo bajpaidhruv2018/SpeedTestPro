@@ -15,8 +15,8 @@ Deno.serve(async (req) => {
     
     console.log(`Download test requested: ${size} bytes`);
 
-    // Pre-generate 1MB of random data to reuse
-    const chunkSize = 1024 * 1024; // 1MB
+    // Pre-generate 64KB of random data to reuse (avoid getRandomValues quota)
+    const chunkSize = 64 * 1024; // 64KB (WebCrypto limit)
     const chunk = new Uint8Array(chunkSize);
     crypto.getRandomValues(chunk);
     
@@ -58,7 +58,9 @@ Deno.serve(async (req) => {
       headers: {
         ...corsHeaders,
         'Content-Type': 'application/octet-stream',
-        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Content-Encoding': 'identity',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+        'Pragma': 'no-cache',
         'Content-Length': size.toString(),
       },
     });
