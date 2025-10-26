@@ -124,59 +124,76 @@ async function measureDownload(config: TestConfig): Promise<ThroughputSample[]> 
 // Measure upload speed
 async function measureUpload(config: TestConfig): Promise<ThroughputSample[]> {
   const samples: ThroughputSample[] = [];
-  const CHUNK_SIZE = 1_000_000; // 1MB per request for smoother sampling
+  const PIECE_SIZE = 4_000_000; // 4MB pieces to reduce HTTP overhead
   const startTime = performance.now();
   const stopAt = startTime + config.durationSec * 1000;
 
-  let totalUploaded = 0;
-  let lastBytes = 0;
+  // Payload filled with non-zero bytes to avoid any potential compression along the path
+  const payload = new Uint8Array(PIECE_SIZE).fill(1);
+
+  // Track bytes per connection: completed pieces and in-flight progress
+  const completedPerConn = new Array<number>(config.concurrency).fill(0);
+  const inflightPerConn = new Array<number>(config.concurrency).fill(0);
+
+  let lastTotal = 0;
   let lastTime = startTime;
 
-  // Prebuild a chunk (no need for random content here)
-  const payload = new Uint8Array(CHUNK_SIZE).fill(1);
+  // Sample instantaneous throughput every 200ms using deltas
   const sampler = setInterval(() => {
     const now = performance.now();
-    const deltaBytes = totalUploaded - lastBytes;
-    const deltaTimeMs = now - lastTime;
-    if (deltaTimeMs > 0) {
-      const mbps = (deltaBytes * 8) / ((deltaTimeMs / 1000) * 1_000_000);
+    const totalLoaded = completedPerConn.reduce((a, b) => a + b, 0) + inflightPerConn.reduce((a, b) => a + b, 0);
+    const deltaBytes = totalLoaded - lastTotal;
+    const deltaMs = now - lastTime;
+    if (deltaMs > 0) {
+      const mbps = (deltaBytes * 8) / ((deltaMs / 1000) * 1_000_000);
       samples.push({ timeMs: now - startTime, mbps });
-      (self as any).postMessage({
-        type: 'progress',
-        phase: 'upload',
-        uploadMbps: mbps,
-        uploadSamples: samples,
-      });
-      lastBytes = totalUploaded;
+      (self as any).postMessage({ type: 'progress', phase: 'upload', uploadMbps: mbps, uploadSamples: samples });
+      lastTotal = totalLoaded;
       lastTime = now;
     }
-  }, 250) as unknown as number;
+  }, 200) as unknown as number;
 
-  const connectionLoop = async (idx: number) => {
-    while (performance.now() < stopAt) {
-      try {
-        const blob = new Blob([payload.buffer], { type: 'application/octet-stream' });
-        await fetch(`${config.baseUrl}/speed-upload?rid=${Math.random()}` , {
-          method: 'POST',
-          body: blob,
-          cache: 'no-store',
-        });
-        totalUploaded += CHUNK_SIZE;
-      } catch (err) {
-        console.error('[Worker] upload connection error', idx, err);
-        break;
-      }
-    }
-  };
+  function runConnection(idx: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const loop = () => {
+        if (performance.now() >= stopAt) return resolve();
+        try {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', `${config.baseUrl}/speed-upload?rid=${Math.random()}`, true);
+          xhr.responseType = 'text';
+          xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              inflightPerConn[idx] = e.loaded;
+            }
+          };
+          xhr.onloadend = () => {
+            completedPerConn[idx] += PIECE_SIZE;
+            inflightPerConn[idx] = 0;
+            setTimeout(loop, 0);
+          };
+          xhr.onerror = () => {
+            // Stop this connection on error
+            resolve();
+          };
+          xhr.send(payload);
+        } catch (err) {
+          resolve();
+        }
+      };
+      loop();
+    });
+  }
 
-  const connections = Array.from({ length: config.concurrency }, (_, i) => connectionLoop(i));
+  const connections = Array.from({ length: config.concurrency }, (_, i) => runConnection(i));
   await Promise.all(connections);
   clearInterval(sampler);
 
-  // Final aggregate sample
+  // Final aggregate sample (overall average)
+  const totalBytes = completedPerConn.reduce((a, b) => a + b, 0) + inflightPerConn.reduce((a, b) => a + b, 0);
   const totalTimeSec = (performance.now() - startTime) / 1000;
   if (totalTimeSec > 0) {
-    const avgMbps = (totalUploaded * 8) / (totalTimeSec * 1_000_000);
+    const avgMbps = (totalBytes * 8) / (totalTimeSec * 1_000_000);
     samples.push({ timeMs: performance.now() - startTime, mbps: avgMbps });
   }
 
