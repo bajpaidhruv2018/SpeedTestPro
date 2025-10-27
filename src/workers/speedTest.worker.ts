@@ -81,7 +81,7 @@ async function measureDownload(config: TestConfig): Promise<ThroughputSample[]> 
       lastBytes = totalBytes;
       lastTime = now;
     }
-  }, 250) as unknown as number;
+  }, 150) as unknown as number;
 
   // Connection loop runner
   const connectionLoop = async (idx: number) => {
@@ -124,73 +124,77 @@ async function measureDownload(config: TestConfig): Promise<ThroughputSample[]> 
 // Measure upload speed
 async function measureUpload(config: TestConfig): Promise<ThroughputSample[]> {
   const samples: ThroughputSample[] = [];
-  const PIECE_SIZE = 4_000_000; // 4MB pieces to reduce HTTP overhead
   const startTime = performance.now();
   const stopAt = startTime + config.durationSec * 1000;
 
-  // Payload filled with non-zero bytes to avoid any potential compression along the path
-  const payload = new Uint8Array(PIECE_SIZE).fill(1);
+  // Use continuous streaming per connection to eliminate request gaps
+  const CHUNK_SIZE = 2_000_000; // 2MB chunk balances CPU and backpressure
+  const payload = new Uint8Array(CHUNK_SIZE).fill(1);
 
-  // Track bytes per connection: completed pieces and in-flight progress
-  const completedPerConn = new Array<number>(config.concurrency).fill(0);
-  const inflightPerConn = new Array<number>(config.concurrency).fill(0);
+  // Track bytes we enqueue (respects backpressure so it closely matches sent bytes)
+  const sentPerConn = new Array<number>(config.concurrency).fill(0);
 
   let lastTotal = 0;
   let lastTime = startTime;
 
-  // Sample instantaneous throughput every 200ms using deltas
+  // Higher-frequency sampling for smoother, more accurate readings
   const sampler = setInterval(() => {
     const now = performance.now();
-    const totalLoaded = completedPerConn.reduce((a, b) => a + b, 0) + inflightPerConn.reduce((a, b) => a + b, 0);
-    const deltaBytes = totalLoaded - lastTotal;
+    const totalSent = sentPerConn.reduce((a, b) => a + b, 0);
+    const deltaBytes = totalSent - lastTotal;
     const deltaMs = now - lastTime;
     if (deltaMs > 0) {
       const mbps = (deltaBytes * 8) / ((deltaMs / 1000) * 1_000_000);
       samples.push({ timeMs: now - startTime, mbps });
       (self as any).postMessage({ type: 'progress', phase: 'upload', uploadMbps: mbps, uploadSamples: samples });
-      lastTotal = totalLoaded;
+      lastTotal = totalSent;
       lastTime = now;
     }
-  }, 200) as unknown as number;
+  }, 150) as unknown as number;
 
-  function runConnection(idx: number): Promise<void> {
+  function runStreamConnection(idx: number): Promise<void> {
     return new Promise<void>((resolve) => {
-      const loop = () => {
-        if (performance.now() >= stopAt) return resolve();
-        try {
-          const xhr = new XMLHttpRequest();
-          xhr.open('POST', `${config.baseUrl}/speed-upload?rid=${Math.random()}`, true);
-          xhr.responseType = 'text';
-          xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-              inflightPerConn[idx] = e.loaded;
+      let cancelled = false;
+
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const produce = async () => {
+            try {
+              while (!cancelled && performance.now() < stopAt) {
+                controller.enqueue(payload);
+                sentPerConn[idx] += CHUNK_SIZE;
+                // Yield to event loop when backpressured
+                if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+                  await new Promise((r) => setTimeout(r, 0));
+                }
+              }
+              try { controller.close(); } catch {}
+            } catch {
+              try { controller.close(); } catch {}
             }
           };
-          xhr.onloadend = () => {
-            completedPerConn[idx] += PIECE_SIZE;
-            inflightPerConn[idx] = 0;
-            setTimeout(loop, 0);
-          };
-          xhr.onerror = () => {
-            // Stop this connection on error
-            resolve();
-          };
-          xhr.send(payload);
-        } catch (err) {
-          resolve();
-        }
-      };
-      loop();
+          produce();
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+
+      fetch(`${config.baseUrl}/speed-upload?rid=${Math.random()}` , {
+        method: 'POST',
+        body: stream as any,
+        headers: { 'Content-Type': 'application/octet-stream' },
+        cache: 'no-store',
+      }).catch(() => {}).finally(() => resolve());
     });
   }
 
-  const connections = Array.from({ length: config.concurrency }, (_, i) => runConnection(i));
+  const connections = Array.from({ length: config.concurrency }, (_, i) => runStreamConnection(i));
   await Promise.all(connections);
   clearInterval(sampler);
 
   // Final aggregate sample (overall average)
-  const totalBytes = completedPerConn.reduce((a, b) => a + b, 0) + inflightPerConn.reduce((a, b) => a + b, 0);
+  const totalBytes = sentPerConn.reduce((a, b) => a + b, 0);
   const totalTimeSec = (performance.now() - startTime) / 1000;
   if (totalTimeSec > 0) {
     const avgMbps = (totalBytes * 8) / (totalTimeSec * 1_000_000);
@@ -211,7 +215,9 @@ async function measureIdleLatency(config: TestConfig): Promise<LatencySample[]> 
     wsConnection = new WebSocket(fullWsUrl);
     const startTime = performance.now();
     let pingCount = 0;
-    const maxPings = config.mode === 'quick' ? 10 : config.mode === 'standard' ? 20 : 30;
+    let receivedCount = 0;
+    const warmupDrops = 3;
+    const maxPings = config.mode === 'quick' ? 12 : config.mode === 'standard' ? 24 : 36;
     let pingInterval: number;
 
     wsConnection.onopen = () => {
@@ -232,7 +238,7 @@ async function measureIdleLatency(config: TestConfig): Promise<LatencySample[]> 
           seq: pingCount,
         }));
         pingCount++;
-      }, 200) as unknown as number;
+      }, 150) as unknown as number;
     };
 
     wsConnection.onmessage = (event) => {
@@ -240,6 +246,8 @@ async function measureIdleLatency(config: TestConfig): Promise<LatencySample[]> 
       try {
         const data = JSON.parse(event.data);
         const rtt = receivedTime - data.clientTime;
+        receivedCount++;
+        if (receivedCount <= warmupDrops) return; // drop first few pings as warmup
         
         samples.push({
           timeMs: receivedTime - startTime,
@@ -272,16 +280,16 @@ async function measureLoadedLatency(
   uploadSamples: ThroughputSample[]
 ): Promise<LatencySample[]> {
   const samples: LatencySample[] = [];
-  const base = new URL(config.baseUrl);
-  const proto = base.protocol === 'https:' ? 'wss' : 'ws';
-  const host = base.host.replace('.supabase.co', '.functions.supabase.co');
-  const wsBase = `${proto}://${host}${base.pathname}`;
+  const wsUrl = config.baseUrl.replace('https://', 'wss://').replace('http://', 'ws://');
+  const fullWsUrl = `${wsUrl}/speed-ping`;
   
   return new Promise((resolve) => {
-    wsConnection = new WebSocket(`${wsBase}/speed-ping`);
+    wsConnection = new WebSocket(fullWsUrl);
     const startTime = performance.now();
     let pingCount = 0;
-    const maxPings = config.mode === 'quick' ? 15 : config.mode === 'standard' ? 25 : 40;
+    let receivedCount = 0;
+    const warmupDrops = 3;
+    const maxPings = config.mode === 'quick' ? 18 : config.mode === 'standard' ? 30 : 45;
     let pingInterval: number;
 
     const satConfig: TestConfig = { ...config, durationSec: config.mode === 'quick' ? 5 : config.mode === 'standard' ? 8 : 10 };
@@ -308,7 +316,7 @@ async function measureLoadedLatency(
           seq: pingCount,
         }));
         pingCount++;
-      }, 250) as unknown as number;
+      }, 150) as unknown as number;
     };
 
     wsConnection.onmessage = (event) => {
@@ -316,6 +324,8 @@ async function measureLoadedLatency(
       try {
         const data = JSON.parse(event.data);
         const rtt = receivedTime - data.clientTime;
+        receivedCount++;
+        if (receivedCount <= warmupDrops) return; // drop first few pings as warmup
         
         samples.push({
           timeMs: receivedTime - startTime,
