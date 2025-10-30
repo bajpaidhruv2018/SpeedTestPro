@@ -257,9 +257,9 @@ export const SpeedTest = () => {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-background via-background to-card">
-      <div className="w-full max-w-7xl space-y-6">
+      <main className="w-full max-w-7xl space-y-6">
         {/* Header */}
-        <div className="text-center space-y-3">
+        <header className="text-center space-y-3">
           <div className="flex items-center justify-center gap-4">
             <h1 className="text-5xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
               Speed Test Pro
@@ -272,7 +272,7 @@ export const SpeedTest = () => {
           <p className="text-muted-foreground text-lg">
             Professional-grade network performance testing with real-time analytics
           </p>
-        </div>
+        </header>
 
         {/* Configuration */}
         <div className="flex flex-col sm:flex-row justify-center items-center gap-4">
@@ -289,7 +289,7 @@ export const SpeedTest = () => {
             onValueChange={(v) => !isRunning && setSelectedServer(servers.find(s => s.id === v) || servers[0])}
             disabled={isRunning}
           >
-            <SelectTrigger className="w-full sm:w-[200px]">
+            <SelectTrigger className="w-full sm:w-[200px]" aria-label="Select test server">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -347,7 +347,6 @@ export const SpeedTest = () => {
                   : "bg-gradient-to-r from-primary to-accent hover:opacity-90"
               }`}
               style={!isRunning ? { boxShadow: 'var(--shadow-glow)' } : {}}
-              aria-label={isRunning ? "Stop speed test" : `Start ${mode} speed test`}
             >
               {isRunning ? (
                 <>
@@ -376,7 +375,7 @@ export const SpeedTest = () => {
         <div className="text-center text-sm text-muted-foreground">
           <p>Tests run in Web Workers for smooth performance • Results saved locally with IndexedDB</p>
         </div>
-      </div>
+      </main>
     </div>
   );
 };
