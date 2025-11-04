@@ -2,8 +2,8 @@
 
 Measure real‑world internet performance: download, upload, latency under load (bufferbloat), jitter, and Quality‑of‑Experience ratings for streaming, calls, and gaming. Built with React + Web Workers and Lovable Cloud Edge Functions.
 
-- Live demo: https://YOUR_DEPLOYED_URL
-- Lovable project: https://lovable.dev/projects/2fbf53e0-5ff6-4d39-bccc-ed6ed7362af1
+- Live demo: https://speed-ping-gauge.lovable.app/
+
 
 [![Built with Lovable](https://img.shields.io/badge/Built%20with-Lovable-7b61ff.svg)](#)
 [![PWA](https://img.shields.io/badge/PWA-Ready-brightgreen.svg)](#)
